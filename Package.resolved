@@ -1,0 +1,24 @@
+{
+  "originHash" : "82cec4d4d1c03d41e29557c6dfafc5ff8f2a91605345457743a8b77ed53face1",
+  "pins" : [
+    {
+      "identity" : "appsflyerframework",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/AppsFlyerSDK/AppsFlyerFramework.git",
+      "state" : {
+        "revision" : "048633aeec183ddd41b5342c5e0ff57f102dd509",
+        "version" : "6.15.3"
+      }
+    },
+    {
+      "identity" : "taanalytics",
+      "kind" : "remoteSourceControl",
+      "location" : "git@github.com:TechArtists/TAAnalytics.git",
+      "state" : {
+        "revision" : "a344af269d4b111fabd4d0de8914965458ee4df4",
+        "version" : "1.0.2"
+      }
+    }
+  ],
+  "version" : 3
+}
