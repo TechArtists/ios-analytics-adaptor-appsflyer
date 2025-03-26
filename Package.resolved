@@ -1,5 +1,5 @@
 {
-  "originHash" : "82cec4d4d1c03d41e29557c6dfafc5ff8f2a91605345457743a8b77ed53face1",
+  "originHash" : "ef0396457a40da2f4c7f563e9ae4ee602d59bc21217c60bcfe158d502de996c8",
   "pins" : [
     {
       "identity" : "appsflyerframework",
@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "git@github.com:TechArtists/TAAnalytics.git",
       "state" : {
-        "revision" : "a344af269d4b111fabd4d0de8914965458ee4df4",
-        "version" : "1.0.2"
+        "revision" : "1409bc6ea7ae77cd82b949ae569e9c4b25fcfb7d",
+        "version" : "0.9.6"
       }
     }
   ],

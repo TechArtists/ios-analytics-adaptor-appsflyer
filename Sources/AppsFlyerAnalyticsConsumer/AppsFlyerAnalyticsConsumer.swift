@@ -22,7 +22,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-//  TAAppsFlyerConsumer.swift
+//  AppsFlyerAnalyticsConsumer.swift
 //  Created by Adi on 10/24/22.
 //
 //  Copyright (c) 2022 Tech Artists Agency SRL
@@ -51,54 +51,64 @@ import OSLog
 import TAAnalytics
 import AppsFlyerLib
 
-public class TAAppsFlyerConsumer: AnalyticsConsumer, AnalyticsConsumerWithWriteOnlyUserID {
+public class AppsFlyerAnalyticsConsumer: AnalyticsConsumer, AnalyticsConsumerWithReadWriteUserID {
    
-    public static let DevKey = "AppFlyerDevKey"
-    public static let AppleAppId = "AppleAppIdKey"
-    
-    let appsFlyerTrackerInstance: AppsFlyerLib = AppsFlyerLib.shared()
-  
-    init(devKey: String, appleAppId: String) {
-        appsFlyerTrackerInstance.appsFlyerDevKey = devKey
-        appsFlyerTrackerInstance.appleAppID = appleAppId
+    public typealias T = AppsFlyerLib
+
+    private let sdkKey: String
+    private let enabledInstallTypes: [TAAnalyticsConfig.InstallType]
+    private let isRedacted: Bool
+
+    public init(
+        enabledInstallTypes: [TAAnalyticsConfig.InstallType] = TAAnalyticsConfig.InstallType.allCases,
+        isRedacted: Bool = true,
+        sdkKey: String
+    ) {
+        self.sdkKey = sdkKey
+        self.enabledInstallTypes = enabledInstallTypes
+        self.isRedacted = isRedacted
+
+        AppsFlyerLib.shared().appsFlyerDevKey = sdkKey
     }
-    
+
     public func startFor(installType: TAAnalyticsConfig.InstallType, userDefaults: UserDefaults, TAAnalytics: TAAnalytics) async throws {
-        do {
-            try await AppsFlyerLib.shared().start()
-        } catch {
-            throw error
+        if !self.enabledInstallTypes.contains(installType) {
+            throw InstallTypeError.invalidInstallType
         }
+        try await AppsFlyerLib.shared().start()
     }
-    
-    public func track(trimmedEvent: TrimmedEvent, params: [String : any AnalyticsBaseParameterValue]?) {
-        let event = trimmedEvent.event
-        
-        appsFlyerTrackerInstance.logEvent(event.rawValue, withValues: params)
+
+    public func track(trimmedEvent: EventAnalyticsModelTrimmed, params: [String: any AnalyticsBaseParameterValue]?) {
+        var eventValues = [String: Any]()
+        if let params = params {
+            for (key, value) in params {
+                eventValues[key] = value.description
+            }
+        }
+        AppsFlyerLib.shared().logEvent(trimmedEvent.rawValue, withValues: eventValues)
     }
-    
-    public func set(trimmedUserProperty: TrimmedUserProperty, to: String?) {
-        //let userProperty = trimmedUserProperty.userProperty
+
+    public func set(trimmedUserProperty: UserPropertyAnalyticsModelTrimmed, to: String?) {
+        // AppsFlyer does not support setting user properties directly
     }
-    
-    public func trim(event: AnalyticsEvent) -> TrimmedEvent {
-        TrimmedEvent(event.rawValue.ob_trim(type: "event", toLength: 40))
+
+    public func trim(event: EventAnalyticsModel) -> EventAnalyticsModelTrimmed {
+        EventAnalyticsModelTrimmed(event.rawValue.ta_trim(toLength: 40, debugType: "event"))
     }
-    
-    public func trim(userProperty: AnalyticsUserProperty) -> TrimmedUserProperty {
-        TrimmedUserProperty(userProperty.rawValue.ob_trim(type: "user property", toLength: 40))
+
+    public func trim(userProperty: UserPropertyAnalyticsModel) -> UserPropertyAnalyticsModelTrimmed {
+        UserPropertyAnalyticsModelTrimmed(userProperty.rawValue.ta_trim(toLength: 40, debugType: "user property"))
     }
-    
-    public var wrappedValue: TAAppsFlyerConsumer {
-        self
+
+    public var wrappedValue: T {
+        AppsFlyerLib.shared()
     }
-    
-    public typealias T = TAAppsFlyerConsumer
-    
+
     public func set(userID: String?) {
         AppsFlyerLib.shared().customerUserID = userID
     }
-    
-    public typealias T = TAAppsFlyerConsumer
-    
+
+    public func getUserID() -> String? {
+        AppsFlyerLib.shared().customerUserID
+    }
 }
