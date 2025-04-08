@@ -28,13 +28,13 @@ SOFTWARE.
 import PackageDescription
 
 let package = Package(
-    name: "AppsFlyerAnalyticsConsumer",
+    name: "AppsFlyerAnalyticsAdaptor",
     platforms: [.iOS(.v15), .macOS(.v10_13)],
     products: [
         // Products define the executables and libraries a package produces, making them visible to other packages.
         .library(
-            name: "AppsFlyerAnalyticsConsumer",
-            targets: ["AppsFlyerAnalyticsConsumer"]
+            name: "AppsFlyerAnalyticsAdaptor",
+            targets: ["AppsFlyerAnalyticsAdaptor"]
         )
     ],
     dependencies: [
@@ -48,15 +48,15 @@ let package = Package(
         // Targets are the basic building blocks of a package, defining a module or a test suite.
         // Targets can depend on other targets in this package and products from dependencies.
         .target(
-            name: "AppsFlyerAnalyticsConsumer",
+            name: "AppsFlyerAnalyticsAdaptor",
             dependencies: [
                 .product(name: "AppsFlyerLib", package: "AppsFlyerFramework"),
                 .product(name:"TAAnalytics", package:"TAAnalytics")
             ]
         ),
         .testTarget(
-            name: "AppsFlyerAnalyticsConsumerTests",
-            dependencies: ["AppsFlyerAnalyticsConsumer"]
+            name: "AppsFlyerAnalyticsAdaptorTests",
+            dependencies: ["AppsFlyerAnalyticsAdaptor"]
         )
     ]
 )
