@@ -28,8 +28,8 @@ import UIKit
 
 /// AppsFlyer SDK configuration, session callbacks, and event mapping.
 ///
-/// `AnalyticsAdaptorWithManagedSessions` drives the SDK's lifetime and `AnalyticsAdaptor` sends
-/// events to it. Each conformance lives in its own extension below.
+/// `AnalyticsAdaptorObservingAppLifecycle` gives the SDK the app lifecycle events it needs, and
+/// `AnalyticsAdaptor` sends events to it. Each conformance lives in its own extension below.
 ///
 /// The SDK's delegate is deliberately *not* set here: the host app owns `AppsFlyerLibDelegate`,
 /// so that attribution can be routed alongside whatever else that app does with it. Use
@@ -56,9 +56,9 @@ public final class AppsFlyerAnalyticsAdaptor: NSObject, Sendable {
 
     public enum ConfigurationError: Error { case missingCredentials }
 
-    /// A failure the SDK reports asynchronously, after `configure` already succeeded.
+    /// A failure the SDK reports asynchronously, after the launch forward configured it.
     public enum Failure {
-        /// `start()` failed — no session was recorded for this foreground. Retried on the next one.
+        /// `start()` failed — no session was recorded for this activation. Retried on the next one.
         case sessionStart(any Error)
         public var error: any Error {
             switch self {
@@ -84,19 +84,32 @@ public final class AppsFlyerAnalyticsAdaptor: NSObject, Sendable {
     @MainActor public  var onFailure: (@MainActor @Sendable (_ failure: Failure) -> Void)?
 
     private let enabledInstallTypes: [TAAnalyticsConfig.InstallType]
+    private let sdkHasCredentials: @Sendable () -> Bool
     private static let maxEventNameLength = 45
 
-    public init(configuration: Configuration, eventMapper: any AppsFlyerEventMapping = AppsFlyerPassthroughEventMapper(),
-                enabledInstallTypes: [TAAnalyticsConfig.InstallType] = TAAnalyticsConfig.InstallType.allCases) {
+    public convenience init(configuration: Configuration,
+                            eventMapper: any AppsFlyerEventMapping = AppsFlyerPassthroughEventMapper(),
+                            enabledInstallTypes: [TAAnalyticsConfig.InstallType] = TAAnalyticsConfig.InstallType.allCases) {
+        self.init(configuration: configuration, eventMapper: eventMapper,
+                  enabledInstallTypes: enabledInstallTypes,
+                  sdkHasCredentials: { !AppsFlyerLib.shared().appsFlyerDevKey.isEmpty })
+    }
+
+    /// Test seam. `AppsFlyerLib` ignores an attempt to clear `appsFlyerDevKey`, so once any test
+    /// sets one the "no credentials" path is unreachable for the rest of the process.
+    init(configuration: Configuration, eventMapper: any AppsFlyerEventMapping,
+         enabledInstallTypes: [TAAnalyticsConfig.InstallType],
+         sdkHasCredentials: @escaping @Sendable () -> Bool) {
         self.configuration = configuration
         self.eventMapper = eventMapper
         self.enabledInstallTypes = enabledInstallTypes
+        self.sdkHasCredentials = sdkHasCredentials
         super.init()
     }
 
     /// Compatibility initializer. Supply appleAppID here or configure it on the SDK before launch.
     public convenience init(enabledInstallTypes: [TAAnalyticsConfig.InstallType] = TAAnalyticsConfig.InstallType.allCases,
-                            isRedacted: Bool = true, sdkKey: String, appleAppID: String? = nil) {
+                            sdkKey: String, appleAppID: String? = nil) {
         self.init(configuration: .init(sdkKey: sdkKey, appleAppID: appleAppID),
                   enabledInstallTypes: enabledInstallTypes)
     }
@@ -109,19 +122,24 @@ public final class AppsFlyerAnalyticsAdaptor: NSObject, Sendable {
     }
 }
 
-// MARK: - AnalyticsAdaptorWithManagedSessions
+// MARK: - AnalyticsAdaptorObservingAppLifecycle
 
-extension AppsFlyerAnalyticsAdaptor: AnalyticsAdaptorWithManagedSessions {
+extension AppsFlyerAnalyticsAdaptor: AnalyticsAdaptorObservingAppLifecycle {
 
-    @MainActor public var sessionStartPolicy: AnalyticsSessionStartPolicy { .everyForeground }
-
-    @MainActor public func configure(installType: TAAnalyticsConfig.InstallType) throws {
-        guard enabledInstallTypes.contains(installType) else { throw InstallTypeError.invalidInstallType }
+    /// The credentials have to be in place before this returns: a cold launch through a OneLink
+    /// delivers the URL immediately afterwards, and an unconfigured SDK cannot resolve it.
+    ///
+    /// Cannot fail, so unusable credentials simply leave the SDK unconfigured; `startFor` reads
+    /// that back and refuses the adaptor, which is where TAAnalytics can still exclude it.
+    @MainActor public func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
+    ) {
         guard !isConfigured else { return }
         let sdk = AppsFlyerLib.shared()
         let appID = configuration.appleAppID ?? sdk.appleAppID
         guard !configuration.sdkKey.isEmpty, !appID.isEmpty, appID.allSatisfy({ $0.isNumber }) else {
-            throw ConfigurationError.missingCredentials
+            return
         }
         sdk.appsFlyerDevKey = configuration.sdkKey
         sdk.appleAppID = appID
@@ -133,9 +151,12 @@ extension AppsFlyerAnalyticsAdaptor: AnalyticsAdaptorWithManagedSessions {
         isConfigured = true
     }
 
-    @MainActor public func startSession() {
+    /// AppsFlyer counts one session per activation and deduplicates them server-side; the first
+    /// one doubles as the install postback.
+    @MainActor public func applicationDidBecomeActive() {
         guard isConfigured else { return }
-        // Do not await the network/ATT response: preparation must not time out while ATT is pending.
+        // Do not await the SDK's callback: this runs on the main thread during activation, and
+        // AppsFlyer can hold the response for the whole ATT timeout.
         let failureHandler = onFailure
         AppsFlyerLib.shared().start { _, error in
             guard let error else { return }
@@ -168,7 +189,17 @@ extension AppsFlyerAnalyticsAdaptor: AnalyticsAdaptor {
         guard enabledInstallTypes.contains(installType) else {
             throw InstallTypeError.invalidInstallType
         }
-        await eventMapper.prepare(installType: installType)
+        // Events must never reach an SDK with no credentials. The test is the SDK's own state,
+        // not this adaptor's: the launch forward normally sets the key, and a host
+        // that configures `AppsFlyerLib` itself satisfies it just as well. Throwing keeps the
+        // adaptor out of TAAnalytics' started set, so it receives no events at all rather than
+        // logging into a dead SDK — and the failure surfaces once, at startup, instead of
+        // silently per event.
+        guard sdkHasCredentials() else {
+            throw ConfigurationError.missingCredentials
+        }
+        // Needs the install type, which a UIKit lifecycle forward does not carry but this does.
+        eventMapper.setInstallType(installType)
     }
 
     public func track(trimmedEvent: EventAnalyticsModelTrimmed, params: [String: any AnalyticsBaseParameterValue]?) {

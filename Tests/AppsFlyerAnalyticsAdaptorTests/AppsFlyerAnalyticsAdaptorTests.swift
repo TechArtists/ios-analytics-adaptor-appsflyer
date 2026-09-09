@@ -124,12 +124,75 @@ final class AppsFlyerAnalyticsAdaptorTests: XCTestCase {
         XCTAssertEqual(AppsFlyerAnalyticsAdaptor.makeAttribution(from: info).raw, info)
     }
 
-    @MainActor func testDisabledInstallAndMissingCredentialsAreRejected() {
-        let disabled = AppsFlyerAnalyticsAdaptor(configuration: .init(sdkKey: "test", appleAppID: "123"), enabledInstallTypes: [.AppStore])
-        XCTAssertThrowsError(try disabled.configure(installType: .Xcode))
-        let invalid = AppsFlyerAnalyticsAdaptor(configuration: .init(sdkKey: "", appleAppID: ""))
-        XCTAssertThrowsError(try invalid.configure(installType: .AppStore))
-        XCTAssertNil(invalid.appsFlyerID)
+    @MainActor func testAnUnconfiguredSDKIsRefusedRatherThanLoggingIntoNothing() async {
+        // The SDK ignores attempts to clear its dev key, so the credential state is injected.
+        let adaptor = AppsFlyerAnalyticsAdaptor(configuration: .init(sdkKey: "test", appleAppID: "123"),
+                                                eventMapper: AppsFlyerPassthroughEventMapper(),
+                                                enabledInstallTypes: TAAnalyticsConfig.InstallType.allCases,
+                                                sdkHasCredentials: { false })
+        let analytics = TAAnalytics(config: .init(analyticsVersion: "test", adaptors: []))
+        do {
+            try await adaptor.startFor(installType: .AppStore, userDefaults: .standard, taAnalytics: analytics)
+            XCTFail("startFor must refuse an SDK that has no credentials")
+        } catch {}
+    }
+
+    @MainActor func testAHostThatConfiguresTheSDKItselfStillReceivesEvents() async throws {
+        // Such a host never lets the adaptor configure the SDK, so the guard has to read the
+        // SDK's own state rather than this adaptor's isConfigured flag.
+        let adaptor = AppsFlyerAnalyticsAdaptor(configuration: .init(sdkKey: "", appleAppID: ""),
+                                                eventMapper: AppsFlyerPassthroughEventMapper(),
+                                                enabledInstallTypes: TAAnalyticsConfig.InstallType.allCases,
+                                                sdkHasCredentials: { true })
+        let analytics = TAAnalytics(config: .init(analyticsVersion: "test", adaptors: []))
+        try await adaptor.startFor(installType: .AppStore, userDefaults: .standard, taAnalytics: analytics)
+    }
+
+    @MainActor func testStartForHandsTheInstallTypeToTheMapper() async throws {
+        // A UIKit lifecycle forward carries no install type, so this is startFor's job.
+        let mapper = RecordingMapper()
+        let adaptor = AppsFlyerAnalyticsAdaptor(configuration: .init(sdkKey: "test", appleAppID: "123"),
+                                                eventMapper: mapper,
+                                                enabledInstallTypes: TAAnalyticsConfig.InstallType.allCases,
+                                                sdkHasCredentials: { true })
+        XCTAssertNil(mapper.installType)
+        try await adaptor.startFor(installType: .TestFlight, userDefaults: .standard,
+                                   taAnalytics: TAAnalytics(config: .init(analyticsVersion: "test", adaptors: [])))
+        XCTAssertEqual(mapper.installType, .TestFlight)
+    }
+
+    @MainActor func testARefusedStartForTellsTheMapperNothing() async {
+        let mapper = RecordingMapper()
+        let adaptor = AppsFlyerAnalyticsAdaptor(configuration: .init(sdkKey: "test", appleAppID: "123"),
+                                                eventMapper: mapper,
+                                                enabledInstallTypes: TAAnalyticsConfig.InstallType.allCases,
+                                                sdkHasCredentials: { false })
+        let analytics = TAAnalytics(config: .init(analyticsVersion: "test", adaptors: []))
+        do {
+            try await adaptor.startFor(installType: .AppStore, userDefaults: .standard, taAnalytics: analytics)
+            XCTFail("startFor must refuse an SDK that has no credentials")
+        } catch {}
+        XCTAssertNil(mapper.installType)
+    }
+
+    @MainActor func testADisabledInstallTypeIsRejected() async {
+        let adaptor = AppsFlyerAnalyticsAdaptor(configuration: .init(sdkKey: "test", appleAppID: "123"),
+                                                eventMapper: AppsFlyerPassthroughEventMapper(),
+                                                enabledInstallTypes: [.AppStore],
+                                                sdkHasCredentials: { true })
+        let analytics = TAAnalytics(config: .init(analyticsVersion: "test", adaptors: []))
+        do {
+            try await adaptor.startFor(installType: .Xcode, userDefaults: .standard, taAnalytics: analytics)
+            XCTFail("startFor must refuse a disabled install type")
+        } catch {}
+    }
+
+    @MainActor func testUnusableCredentialsLeaveTheSDKUnconfigured() {
+        // The launch forward cannot throw, so a bad configuration has to show up as "not
+        // configured" — which is what startFor and appsFlyerID both read.
+        let adaptor = AppsFlyerAnalyticsAdaptor(configuration: .init(sdkKey: "", appleAppID: ""))
+        adaptor.application(.shared, didFinishLaunchingWithOptions: nil)
+        XCTAssertNil(adaptor.appsFlyerID)
     }
 }
 
@@ -138,5 +201,22 @@ private struct TestMapper: AppsFlyerEventMapping {
     func map(event: EventAnalyticsModelTrimmed, params: [String: any AnalyticsBaseParameterValue]?) -> AppsFlyerEventPayload? {
         guard event.rawValue == "purchase" else { return nil }
         return .init(parameters: ["custom": true], revenue: revenue)
+    }
+}
+
+private final class RecordingMapper: AppsFlyerEventMapping, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: TAAnalyticsConfig.InstallType?
+    var installType: TAAnalyticsConfig.InstallType? {
+        lock.lock(); defer { lock.unlock() }
+        return recorded
+    }
+    func setInstallType(_ installType: TAAnalyticsConfig.InstallType) {
+        lock.lock(); defer { lock.unlock() }
+        recorded = installType
+    }
+    func map(event: EventAnalyticsModelTrimmed,
+             params: [String: any AnalyticsBaseParameterValue]?) -> AppsFlyerEventPayload? {
+        .init(parameters: [:])
     }
 }

@@ -27,13 +27,16 @@ import TAAnalytics
 /// Maps or filters events without embedding an app's business rules in the SDK adaptor.
 /// Calls may originate from TAAnalytics' event actor, so implementations must be Sendable.
 public protocol AppsFlyerEventMapping: Sendable {
-    func prepare(installType: TAAnalyticsConfig.InstallType) async
+    /// The install type, handed over during `startFor` — before any event can reach
+    /// ``map(event:params:)``. A UIKit lifecycle forward carries no install type, which is why
+    /// this arrives from there rather than at launch. Optional; ignored by default.
+    func setInstallType(_ installType: TAAnalyticsConfig.InstallType)
     func map(event: EventAnalyticsModelTrimmed,
              params: [String: any AnalyticsBaseParameterValue]?) -> AppsFlyerEventPayload?
 }
 
 public extension AppsFlyerEventMapping {
-    func prepare(installType: TAAnalyticsConfig.InstallType) async {}
+    func setInstallType(_ installType: TAAnalyticsConfig.InstallType) {}
 }
 
 /// A synchronous mapping result. Untyped SDK parameters never cross an actor boundary here.

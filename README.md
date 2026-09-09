@@ -16,9 +16,9 @@ Task { await analytics.start() }
 
 ## Lifecycle
 
-TAAnalytics configures this adaptor at launch and starts a session on each activation, its policy being `.everyForeground`. Each adaptor becomes ready independently, so a slow SDK cannot delay this one's session. Waiting for the network or for ATT never blocks adaptor preparation.
+TAAnalytics forwards `didFinishLaunchingWithOptions` and `didBecomeActive` to this adaptor, which configures the SDK on the first and starts a session on the second. Each adaptor becomes ready independently, so a slow SDK cannot delay this one's session. Waiting for the network or for ATT never blocks `startFor`.
 
-Forward links through TAAnalytics, which calls `observeOpenURL(_:options:)` and `observeUserActivity(_:)` on every configured adaptor. Both observe only, so app routing is unaffected.
+Forward links through TAAnalytics, which calls `observeOpenURL(_:options:)` and `observeUserActivity(_:)` on every observing adaptor. Both observe only, so app routing is unaffected.
 
 Set `onFailure` on the main actor to receive a typed `Failure`. Only `.sessionStart` originates here — it is transient, and retried on the next foreground.
 
@@ -28,7 +28,7 @@ The default `AppsFlyerPassthroughEventMapper` preserves custom events and parame
 
 ## Attribution
 
-The adaptor does not claim `AppsFlyerLibDelegate`, and `configure(installType:)` deliberately leaves the SDK's delegate unset. The host app owns it, so attribution can be routed alongside whatever else that app does with it. Only the parsing lives here, because only the payload's shape is AppsFlyer's:
+The adaptor does not claim `AppsFlyerLibDelegate`, and the launch forward deliberately leaves the SDK's delegate unset. The host app owns it, so attribution can be routed alongside whatever else that app does with it. Only the parsing lives here, because only the payload's shape is AppsFlyer's:
 
 ```swift
 extension MyHandler: AppsFlyerLibDelegate {
