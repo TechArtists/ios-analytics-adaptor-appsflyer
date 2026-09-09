@@ -29,7 +29,7 @@ import PackageDescription
 
 let package = Package(
     name: "AppsFlyerAnalyticsAdaptor",
-    platforms: [.iOS(.v15), .macOS(.v10_13)],
+    platforms: [.iOS(.v15)],
     products: [
         // Products define the executables and libraries a package produces, making them visible to other packages.
         .library(
@@ -42,7 +42,7 @@ let package = Package(
             url: "https://github.com/AppsFlyerSDK/AppsFlyerFramework.git",
             .upToNextMajor(from: "6.17.0")
         ),
-        .package(url: "git@github.com:TechArtists/ios-analytics.git", from: "1.13.0")
+        .package(url: "git@github.com:TechArtists/ios-analytics.git", from: "1.13.1")
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.

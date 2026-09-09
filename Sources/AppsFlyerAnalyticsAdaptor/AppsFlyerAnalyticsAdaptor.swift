@@ -81,10 +81,10 @@ public final class AppsFlyerAnalyticsAdaptor: NSObject, Sendable {
     public let eventMapper: any AppsFlyerEventMapping
 
     @MainActor private var isConfigured = false
-    @MainActor public  var onFailure: (@MainActor @Sendable (_ failure: Failure) -> Void)?
+    @MainActor public var onFailure: (@MainActor @Sendable (_ failure: Failure) -> Void)?
 
     private let enabledInstallTypes: [TAAnalyticsConfig.InstallType]
-    private let sdkHasCredentials: @Sendable () -> Bool
+    private let sdkHasCredentials: @MainActor @Sendable () -> Bool
     private static let maxEventNameLength = 45
 
     public convenience init(configuration: Configuration,
@@ -92,14 +92,19 @@ public final class AppsFlyerAnalyticsAdaptor: NSObject, Sendable {
                             enabledInstallTypes: [TAAnalyticsConfig.InstallType] = TAAnalyticsConfig.InstallType.allCases) {
         self.init(configuration: configuration, eventMapper: eventMapper,
                   enabledInstallTypes: enabledInstallTypes,
-                  sdkHasCredentials: { !AppsFlyerLib.shared().appsFlyerDevKey.isEmpty })
+                  sdkHasCredentials: {
+                      let sdk = AppsFlyerLib.shared()
+                      return !sdk.appsFlyerDevKey.isEmpty
+                          && !sdk.appleAppID.isEmpty
+                          && sdk.appleAppID.allSatisfy(\.isNumber)
+                  })
     }
 
     /// Test seam. `AppsFlyerLib` ignores an attempt to clear `appsFlyerDevKey`, so once any test
     /// sets one the "no credentials" path is unreachable for the rest of the process.
     init(configuration: Configuration, eventMapper: any AppsFlyerEventMapping,
          enabledInstallTypes: [TAAnalyticsConfig.InstallType],
-         sdkHasCredentials: @escaping @Sendable () -> Bool) {
+         sdkHasCredentials: @escaping @MainActor @Sendable () -> Bool) {
         self.configuration = configuration
         self.eventMapper = eventMapper
         self.enabledInstallTypes = enabledInstallTypes
@@ -137,6 +142,10 @@ extension AppsFlyerAnalyticsAdaptor: AnalyticsAdaptorObservingAppLifecycle {
     ) {
         guard !isConfigured else { return }
         let sdk = AppsFlyerLib.shared()
+        if configuration.sdkKey.isEmpty {
+            isConfigured = sdkHasCredentials()
+            return
+        }
         let appID = configuration.appleAppID ?? sdk.appleAppID
         guard !configuration.sdkKey.isEmpty, !appID.isEmpty, appID.allSatisfy({ $0.isNumber }) else {
             return
@@ -195,9 +204,10 @@ extension AppsFlyerAnalyticsAdaptor: AnalyticsAdaptor {
         // adaptor out of TAAnalytics' started set, so it receives no events at all rather than
         // logging into a dead SDK — and the failure surfaces once, at startup, instead of
         // silently per event.
-        guard sdkHasCredentials() else {
+        guard await sdkHasCredentials() else {
             throw ConfigurationError.missingCredentials
         }
+        await MainActor.run { isConfigured = true }
         // Needs the install type, which a UIKit lifecycle forward does not carry but this does.
         eventMapper.setInstallType(installType)
     }

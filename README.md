@@ -1,6 +1,6 @@
 # AppsFlyerAnalyticsAdaptor
 
-An AppsFlyer SDK adaptor for TAAnalytics 1.14.0 or later. Version 0.11.0 keeps the Swift 6 and iOS 15 requirements. The package retains its historical macOS platform declaration, but its UIKit-dependent integration and TAAnalytics dependency are intended and tested for iOS.
+An AppsFlyer SDK adaptor for TAAnalytics 1.13.1 or later. Version 1.1.1 requires Swift 6 and iOS 15.
 
 ```swift
 let adaptor = AppsFlyerAnalyticsAdaptor(configuration: .init(
@@ -16,7 +16,7 @@ Task { await analytics.start() }
 
 ## Lifecycle
 
-TAAnalytics forwards `didFinishLaunchingWithOptions` and `didBecomeActive` to this adaptor, which configures the SDK on the first and starts a session on the second. Each adaptor becomes ready independently, so a slow SDK cannot delay this one's session. Waiting for the network or for ATT never blocks `startFor`.
+TAAnalytics forwards `didFinishLaunchingWithOptions` and `didBecomeActive` to this adaptor, which configures the SDK on the first and starts a session on the second. Each adaptor becomes ready independently, so a slow SDK cannot delay this one's session. If preparation finishes after the app became active, TAAnalytics immediately supplies the current activation. Waiting for the network or for ATT never blocks `startFor`.
 
 Forward links through TAAnalytics, which calls `observeOpenURL(_:options:)` and `observeUserActivity(_:)` on every observing adaptor. Both observe only, so app routing is unaffected.
 
