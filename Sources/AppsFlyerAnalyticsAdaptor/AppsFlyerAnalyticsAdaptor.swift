@@ -21,70 +21,262 @@
 //  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 //  THE SOFTWARE.
 
-import Foundation
-import OSLog
-
-import TAAnalytics
 import AppsFlyerLib
+import Foundation
+@preconcurrency import TAAnalytics
+import UIKit
 
-public class AppsFlyerAnalyticsAdaptor: AnalyticsAdaptor, AnalyticsAdaptorWithReadWriteUserID {
-   
-    public typealias T = AppsFlyerLib
+/// AppsFlyer SDK configuration, session callbacks, and event mapping.
+///
+/// `AnalyticsAdaptorWithManagedSessions` drives the SDK's lifetime and `AnalyticsAdaptor` sends
+/// events to it. Each conformance lives in its own extension below.
+///
+/// The SDK's delegate is deliberately *not* set here: the host app owns `AppsFlyerLibDelegate`,
+/// so that attribution can be routed alongside whatever else that app does with it. Use
+/// ``makeAttribution(from:)`` to translate the payload the delegate receives.
+public final class AppsFlyerAnalyticsAdaptor: NSObject, Sendable {
 
-    private let sdkKey: String
-    private let enabledInstallTypes: [TAAnalyticsConfig.InstallType]
-    private let isRedacted: Bool
+    public struct Configuration: Sendable {
+        public let sdkKey: String
+        public let appleAppID: String?
+        public let attWaitTimeout: TimeInterval?
+        public let isDebug: Bool
+        public let customerUserID: @MainActor @Sendable () -> String?
 
-    public init(
-        enabledInstallTypes: [TAAnalyticsConfig.InstallType] = TAAnalyticsConfig.InstallType.allCases,
-        isRedacted: Bool = true,
-        sdkKey: String
-    ) {
-        self.sdkKey = sdkKey
-        self.enabledInstallTypes = enabledInstallTypes
-        self.isRedacted = isRedacted
-
-        AppsFlyerLib.shared().appsFlyerDevKey = sdkKey
+        public init(sdkKey: String, appleAppID: String? = nil,
+                    attWaitTimeout: TimeInterval? = nil, isDebug: Bool = false,
+                    customerUserID: @escaping @MainActor @Sendable () -> String? = { nil }) {
+            self.sdkKey = sdkKey
+            self.appleAppID = appleAppID
+            self.attWaitTimeout = attWaitTimeout
+            self.isDebug = isDebug
+            self.customerUserID = customerUserID
+        }
     }
 
-    public func startFor(installType: TAAnalyticsConfig.InstallType, userDefaults: UserDefaults, TAAnalytics: TAAnalytics) async throws {
-        if !self.enabledInstallTypes.contains(installType) {
+    public enum ConfigurationError: Error { case missingCredentials }
+
+    /// A failure the SDK reports asynchronously, after `configure` already succeeded.
+    public enum Failure {
+        /// `start()` failed — no session was recorded for this foreground. Retried on the next one.
+        case sessionStart(any Error)
+        public var error: any Error {
+            switch self {
+            case .sessionStart(let error):
+                return error
+            }
+        }
+
+        /// Stable name for `trackErrorEvent(reason:)`. Unchanged from the strings this replaced,
+        /// so dashboards already matching on them keep working.
+        public var analyticsReason: String {
+            switch self {
+            case .sessionStart:
+                return "appsflyer_start_failed"
+            }
+        }
+    }
+
+    private let configuration: Configuration
+    public let eventMapper: any AppsFlyerEventMapping
+
+    @MainActor private var isConfigured = false
+    @MainActor public  var onFailure: (@MainActor @Sendable (_ failure: Failure) -> Void)?
+
+    private let enabledInstallTypes: [TAAnalyticsConfig.InstallType]
+    private static let maxEventNameLength = 45
+
+    public init(configuration: Configuration, eventMapper: any AppsFlyerEventMapping = AppsFlyerPassthroughEventMapper(),
+                enabledInstallTypes: [TAAnalyticsConfig.InstallType] = TAAnalyticsConfig.InstallType.allCases) {
+        self.configuration = configuration
+        self.eventMapper = eventMapper
+        self.enabledInstallTypes = enabledInstallTypes
+        super.init()
+    }
+
+    /// Compatibility initializer. Supply appleAppID here or configure it on the SDK before launch.
+    public convenience init(enabledInstallTypes: [TAAnalyticsConfig.InstallType] = TAAnalyticsConfig.InstallType.allCases,
+                            isRedacted: Bool = true, sdkKey: String, appleAppID: String? = nil) {
+        self.init(configuration: .init(sdkKey: sdkKey, appleAppID: appleAppID),
+                  enabledInstallTypes: enabledInstallTypes)
+    }
+
+    /// The install identifier, available as soon as the SDK is configured. Purchase SDKs are given
+    /// it so a purchase joins back to the install.
+    @MainActor public var appsFlyerID: String? {
+        guard isConfigured else { return nil }
+        return AppsFlyerLib.shared().getAppsFlyerUID()
+    }
+}
+
+// MARK: - AnalyticsAdaptorWithManagedSessions
+
+extension AppsFlyerAnalyticsAdaptor: AnalyticsAdaptorWithManagedSessions {
+
+    @MainActor public var sessionStartPolicy: AnalyticsSessionStartPolicy { .everyForeground }
+
+    @MainActor public func configure(installType: TAAnalyticsConfig.InstallType) throws {
+        guard enabledInstallTypes.contains(installType) else { throw InstallTypeError.invalidInstallType }
+        guard !isConfigured else { return }
+        let sdk = AppsFlyerLib.shared()
+        let appID = configuration.appleAppID ?? sdk.appleAppID
+        guard !configuration.sdkKey.isEmpty, !appID.isEmpty, appID.allSatisfy({ $0.isNumber }) else {
+            throw ConfigurationError.missingCredentials
+        }
+        sdk.appsFlyerDevKey = configuration.sdkKey
+        sdk.appleAppID = appID
+        sdk.isDebug = configuration.isDebug
+        if let userID = configuration.customerUserID() { sdk.customerUserID = userID }
+        if let timeout = configuration.attWaitTimeout, timeout > 0 {
+            sdk.waitForATTUserAuthorization(timeoutInterval: timeout)
+        }
+        isConfigured = true
+    }
+
+    @MainActor public func startSession() {
+        guard isConfigured else { return }
+        // Do not await the network/ATT response: preparation must not time out while ATT is pending.
+        let failureHandler = onFailure
+        AppsFlyerLib.shared().start { _, error in
+            guard let error else { return }
+            Task { @MainActor in failureHandler?(.sessionStart(error)) }
+        }
+    }
+
+    @MainActor public func observeOpenURL(_ url: URL, options: [UIApplication.OpenURLOptionsKey: Any]) {
+        guard isConfigured else { return }
+        AppsFlyerLib.shared().handleOpen(url, options: options)
+    }
+
+    @MainActor public func observeUserActivity(_ userActivity: NSUserActivity) {
+        guard isConfigured else { return }
+        AppsFlyerLib.shared().continue(userActivity, restorationHandler: nil)
+    }
+}
+
+// MARK: - AnalyticsAdaptor
+
+extension AppsFlyerAnalyticsAdaptor: AnalyticsAdaptor {
+
+    public typealias T = AppsFlyerLib
+
+    public func startFor(
+        installType: TAAnalyticsConfig.InstallType,
+        userDefaults: UserDefaults,
+        taAnalytics: TAAnalytics
+    ) async throws {
+        guard enabledInstallTypes.contains(installType) else {
             throw InstallTypeError.invalidInstallType
         }
-        try await AppsFlyerLib.shared().start()
+        await eventMapper.prepare(installType: installType)
     }
 
     public func track(trimmedEvent: EventAnalyticsModelTrimmed, params: [String: any AnalyticsBaseParameterValue]?) {
-        var eventValues = [String: Any]()
-        if let params = params {
-            for (key, value) in params {
-                eventValues[key] = value.description
-            }
-        }
-        AppsFlyerLib.shared().logEvent(trimmedEvent.rawValue, withValues: eventValues)
+        guard let values = eventValues(for: trimmedEvent, params: params) else { return }
+        AppsFlyerLib.shared().logEvent(trimmedEvent.rawValue, withValues: values)
     }
 
-    public func set(trimmedUserProperty: UserPropertyAnalyticsModelTrimmed, to: String?) {
-        // AppsFlyer does not support setting user properties directly
-    }
+    /// AppsFlyer has no user-property concept — the closest thing, `setAdditionalData`, is a
+    /// partner-integration channel that rides along on every event — so properties stop here.
+    public func set(trimmedUserProperty: UserPropertyAnalyticsModelTrimmed, to: String?) {}
 
     public func trim(event: EventAnalyticsModel) -> EventAnalyticsModelTrimmed {
-        EventAnalyticsModelTrimmed(event.rawValue.ta_trim(toLength: 40, debugType: "event"))
+        EventAnalyticsModelTrimmed(
+            event.rawValue.ta_trim(toLength: Self.maxEventNameLength, debugType: "event")
+        )
     }
 
     public func trim(userProperty: UserPropertyAnalyticsModel) -> UserPropertyAnalyticsModelTrimmed {
-        UserPropertyAnalyticsModelTrimmed(userProperty.rawValue.ta_trim(toLength: 40, debugType: "user property"))
+        UserPropertyAnalyticsModelTrimmed(userProperty.rawValue)
     }
 
-    public var wrappedValue: T {
+    public var wrappedValue: AppsFlyerLib {
         AppsFlyerLib.shared()
     }
+}
 
-    public func set(userID: String?) {
-        AppsFlyerLib.shared().customerUserID = userID
+// MARK: - Event values
+
+extension AppsFlyerAnalyticsAdaptor {
+
+    /// Applies the mapper, then re-validates the money it produced. The mapper decides *what* to
+    /// send and *how much*; the adaptor decides whether AppsFlyer can read it.
+    func eventValues(for trimmedEvent: EventAnalyticsModelTrimmed,
+                    params: [String: any AnalyticsBaseParameterValue]?) -> [String: Any]? {
+        guard let event = eventMapper.map(event: trimmedEvent, params: params) else { return nil }
+        var values = event.parameters
+        if let revenue = event.revenue,
+           revenue.amount.isFinite, revenue.amount >= 0,
+           revenue.currency.count == 3,
+           revenue.currency.allSatisfy({ $0.isASCII && $0.isUppercase }) {
+            values[AFEventParamRevenue] = revenue.amount
+            values[AFEventParamCurrency] = revenue.currency
+        }
+        return values
+    }
+}
+
+// MARK: - Attribution translation
+
+extension AppsFlyerAnalyticsAdaptor {
+
+    /// The `af_status` AppsFlyer reports for a non-attributed install, and the value both
+    /// attributed and organic installs are normalised to, so the fields are never empty.
+    private static let organicStatus = "Organic"
+    private static let organicValue = "organic"
+
+    /// Translates the payload `AppsFlyerLibDelegate.onConversionDataSuccess` receives.
+    ///
+    /// The delegate is owned by the host app, but the payload's shape is AppsFlyer's, so parsing it
+    /// belongs here. Normalizes the SDK's untyped dictionary, then maps `af_status`, `media_source`,
+    /// `campaign` and `is_first_launch` onto ``MMPAttribution``, keeping the `af_`-named fields as
+    /// vendor parameters so nothing upstream has to know AppsFlyer's spelling.
+    public static func makeAttribution(from conversionInfo: [AnyHashable: Any]) -> MMPAttribution {
+        let info = conversionInfo.reduce(into: [String: String]()) { result, entry in
+            guard let key = entry.key as? String else { return }
+            result[key] = String(describing: entry.value)
+        }
+        return makeAttribution(from: info)
     }
 
-    public func getUserID() -> String? {
-        AppsFlyerLib.shared().customerUserID
+    static func makeAttribution(from info: [String: String]) -> MMPAttribution {
+        let status = info["af_status"]
+        let isOrganic = status == organicStatus
+        let network = isOrganic ? organicValue : (info["media_source"] ?? organicValue)
+        let campaign = isOrganic ? organicValue : (info["campaign"] ?? organicValue)
+
+        var vendorParameters = [String: String]()
+        vendorParameters["af_install_time"] = info["install_time"]
+        vendorParameters["af_click_time"] = info["click_time"]
+
+        // The raw AppsFlyer fields are only meaningful for an attributed install.
+        if !isOrganic {
+            vendorParameters["af_media_source"] = info["media_source"]
+            vendorParameters["af_campaign"] = info["campaign"]
+            vendorParameters["af_status"] = status
+        }
+
+        return MMPAttribution(
+            network: network,
+            campaign: campaign,
+            isOrganic: isOrganic,
+            isFirstLaunch: isFirstLaunch(info),
+            vendorParameters: vendorParameters,
+            raw: info
+        )
     }
+
+    /// AppsFlyer sometimes hands this back stringified rather than as a boolean.
+    private static func isFirstLaunch(_ info: [String: String]) -> Bool {
+        let flag = info["is_first_launch"]?.lowercased()
+        return flag == "true" || flag == "1"
+    }
+}
+
+// MARK: - AnalyticsAdaptorWithReadWriteUserID
+
+extension AppsFlyerAnalyticsAdaptor: AnalyticsAdaptorWithReadWriteUserID {
+
+    public func set(userID: String?) { AppsFlyerLib.shared().customerUserID = userID }
+    public func getUserID() -> String? { AppsFlyerLib.shared().customerUserID }
 }
