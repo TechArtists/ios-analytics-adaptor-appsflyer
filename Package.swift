@@ -1,3 +1,4 @@
+// swift-tools-version: 6.0
 /*
 MIT License
 
@@ -22,7 +23,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-// swift-tools-version: 6.0
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
@@ -40,9 +40,9 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/AppsFlyerSDK/AppsFlyerFramework.git",
-            .upToNextMajor(from: "6.0.0")
+            .upToNextMajor(from: "6.17.0")
         ),
-        .package(url: "git@github.com:TechArtists/TAAnalytics.git", from: "1.0.0")
+        .package(url: "git@github.com:TechArtists/ios-analytics.git", from: "1.12.0")
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -51,7 +51,7 @@ let package = Package(
             name: "AppsFlyerAnalyticsAdaptor",
             dependencies: [
                 .product(name: "AppsFlyerLib", package: "AppsFlyerFramework"),
-                .product(name:"TAAnalytics", package:"TAAnalytics")
+                .product(name:"TAAnalytics", package:"ios-analytics")
             ]
         ),
         .testTarget(
